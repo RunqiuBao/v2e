@@ -1,0 +1,1 @@
+python3 v2e.py -o /home/runqiu/datasets/carla/test/seq0/events/right/ --overwrite --slomo_model input/SuperSloMo39.ckpt -i /home/runqiu/datasets/carla/test/seq0/cam_rgb_r/ --input_frame_rate 1000 --dvs_h5 events --dvs_aedat2 None --timestamp_resolution 0.001 --auto_timestamp_resolution False
