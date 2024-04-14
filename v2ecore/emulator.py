@@ -24,7 +24,10 @@ from v2ecore.emulator_utils import rescale_intensity_frame
 from v2ecore.emulator_utils import subtract_leak_current
 from v2ecore.output.ae_text_output import DVSTextOutput
 from v2ecore.output.aedat2_output import AEDat2Output
-from v2ecore.output.aedat4_output import AEDat4Output
+try:
+    from v2ecore.output.aedat4_output import AEDat4Output
+except:
+    pass
 from v2ecore.v2e_utils import checkAddSuffix, v2e_quit, video_writer
 
 # import rosbag # not yet for python 3
@@ -227,6 +230,7 @@ class EventEmulator(object):
         self.output_folder = output_folder
         self.dvs_h5 = dvs_h5
         self.dvs_h5_dataset = None
+        self.bSaveH5InDsecFormat = True
         self.frame_h5_dataset = None
         self.frame_ts_dataset = None
         self.frame_ev_idx_dataset = None
@@ -316,13 +320,23 @@ class EventEmulator(object):
                 logger.info('opening event output dataset file ' + path)
                 self.dvs_h5 = h5py.File(path, "w")
 
-                # for events
-                self.dvs_h5_dataset = self.dvs_h5.create_dataset(
-                    name="events",
-                    shape=(0, 4),
-                    maxshape=(None, 4),
-                    dtype="uint32",
-                    compression="gzip")
+                if self.bSaveH5InDsecFormat:
+                    events_group = self.dvs_h5.create_group('events')
+                    # Create datasets under /events
+                    events_group.create_dataset(name='p', shape=(0, 1), maxshape=(None, 1), dtype=np.int8, compression='gzip')
+                    events_group.create_dataset(name='t', shape=(0, 1), maxshape=(None, 1), dtype=np.uint32, compression='gzip')
+                    events_group.create_dataset(name='x', shape=(0, 1), maxshape=(None, 1), dtype=np.uint16, compression='gzip')
+                    events_group.create_dataset(name='y', shape=(0, 1), maxshape=(None, 1), dtype=np.uint16, compression='gzip')
+                    self.dvs_h5.create_dataset(name='ms_to_idx', shape=(0,), maxshape=(None,), dtype=np.uint32, compression='gzip')
+                    self.dvs_h5.create_dataset(name='t_offset', shape=(0,), maxshape=(None,), dtype=np.uint16, compression='gzip')
+                else:    # for events
+                    self.dvs_h5_dataset = self.dvs_h5.create_dataset(
+                        name="events",
+                        shape=(0, 4),
+                        maxshape=(None, 4),
+                        dtype="uint32",
+                        compression="gzip")
+                
 
             if dvs_aedat2:
                 path = os.path.join(self.output_folder, dvs_aedat2)
@@ -940,8 +954,7 @@ class EventEmulator(object):
         if not self.photoreceptor_noise and self.shot_noise_rate_hz>0:
             self.base_log_frame[shot_on_xy]=self.lp_log_frame[shot_on_xy]
             self.base_log_frame[shot_off_xy]=self.lp_log_frame[shot_off_xy]
-
-
+            
         if len(events) > 0:
             events = events.cpu().data.numpy() # # ndarray shape (N,4) where N is the number of events are rows are [t,x,y,p]
             timestamps=events[:,0]
@@ -958,11 +971,41 @@ class EventEmulator(object):
                 temp_events = temp_events.astype(np.uint32)
 
                 # save events
-                self.dvs_h5_dataset.resize(
-                    self.dvs_h5_dataset.shape[0] + temp_events.shape[0],
-                    axis=0)
+                if self.bSaveH5InDsecFormat:
+                    # compute ms to index
+                    msAvailable = temp_events[-1][0] / 1000.0
+                    msAvailable = int(msAvailable)
+                    if msAvailable == 0:
+                        self.dvs_h5['ms_to_idx'].resize(1, axis=0)
+                        self.dvs_h5['ms_to_idx'][0] = 0
+                    else:
+                        if msAvailable >= self.dvs_h5['ms_to_idx'].shape[0]:                            
+                            for incre in range(1 + msAvailable - self.dvs_h5['ms_to_idx'].shape[0]):
+                                self.dvs_h5['ms_to_idx'].resize(self.dvs_h5['ms_to_idx'].shape[0] + 1, axis=0)                            
+                                self.dvs_h5['ms_to_idx'][-1] = self.dvs_h5['events']['p'].shape[0] + np.argmin(np.abs(temp_events[:, 0] / 1000.0 - self.dvs_h5['ms_to_idx'].shape[0] + 1))
 
-                self.dvs_h5_dataset[-temp_events.shape[0]:] = temp_events
+                    self.dvs_h5['events']['p'].resize(
+                        self.dvs_h5['events']['p'].shape[0] + temp_events.shape[0],
+                        axis=0)
+                    self.dvs_h5['events']['p'][-temp_events.shape[0]:] = temp_events[:, -1].astype(np.int8)[:, np.newaxis]
+                    self.dvs_h5['events']['t'].resize(
+                        self.dvs_h5['events']['t'].shape[0] + temp_events.shape[0],
+                        axis=0)
+                    self.dvs_h5['events']['t'][-temp_events.shape[0]:] = temp_events[:, 0][:, np.newaxis]
+                    self.dvs_h5['events']['x'].resize(
+                        self.dvs_h5['events']['x'].shape[0] + temp_events.shape[0],
+                        axis=0)
+                    self.dvs_h5['events']['x'][-temp_events.shape[0]:] = temp_events[:, 1].astype(np.uint16)[:, np.newaxis]
+                    self.dvs_h5['events']['y'].resize(
+                        self.dvs_h5['events']['y'].shape[0] + temp_events.shape[0],
+                        axis=0)
+                    self.dvs_h5['events']['y'][-temp_events.shape[0]:] = temp_events[:, 2].astype(np.uint16)[:, np.newaxis]
+                else:
+                    self.dvs_h5_dataset.resize(
+                        self.dvs_h5_dataset.shape[0] + temp_events.shape[0],
+                        axis=0)
+
+                    self.dvs_h5_dataset[-temp_events.shape[0]:] = temp_events
 
             if self.dvs_aedat2 is not None:
                 self.dvs_aedat2.appendEvents(events, signnoise_label=signnoise_label)
